@@ -17,9 +17,9 @@ from functools import reduce
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
-from utils import get_parser, save_model, load_model, get_std_opt, move_to_cuda
+from utils import get_parser, save_model, load_model, move_to_cuda
 from models import GraphTrans
-from data_utils import Dictionary, GraphReader, TextReader, GraphTransReader, BatchSampler
+from data_utils import Dictionary, GraphReader, GraphReaderBERT, TextReader, GraphTransReader, BatchSampler
 
 
 def load_dict(args):
@@ -33,7 +33,7 @@ def load_dict(args):
 
 
 def load_data(args, node_dict, edge_dict, text_dict, stage="train"):
-    src_graph = GraphReader(os.path.join(args.data_dir, "{}_src_graph.bin".format(stage)), node_dict, edge_dict)
+    src_graph = GraphReaderBERT(os.path.join(args.data_dir, "{}_src_graph.bin".format(stage)), node_dict, edge_dict)
     src_text = TextReader(os.path.join(args.data_dir, "{}_src_text.txt".format(stage)), text_dict)
     tgt_graph = GraphReader(os.path.join(args.data_dir, "{}_tgt_graph.bin".format(stage)), node_dict, edge_dict)
     data = GraphTransReader(src_graph, src_text, tgt_graph,
@@ -210,7 +210,7 @@ def main():
             samples = test_it
 
         batch_correct, batch_num, batch_pred, batch_graph_correct = greedy_search(model, samples["src_graph"], samples["src_text"], samples["tgt_graph"],
-                      node_dict, edge_dict, args.max_nodes, cuda, False)
+                      node_dict, edge_dict, args.max_nodes, cuda)
 
         nodes_correct += batch_correct[0]
         nodes_num += batch_num[0]

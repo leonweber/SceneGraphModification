@@ -12,10 +12,11 @@ import numpy as np
 import torch
 
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
-from utils import get_parser, save_model, load_model, get_std_opt, move_to_cuda
+from utils import get_parser, save_model, load_model, move_to_cuda
 from models import GraphTrans
-from data_utils import Dictionary, GraphReader, TextReader, GraphTransReader, BatchSampler
+from data_utils import Dictionary, GraphReader, TextReader, GraphTransReader, BatchSampler, GraphReaderBERT
 from search import greedy_search
 
 
@@ -34,7 +35,7 @@ def load_data(args, node_dict, edge_dict, text_dict, stage="train"):
     """ Load data
     stage: train/dev
     """
-    src_graph = GraphReader(os.path.join(args.data_dir, "{}_src_graph.bin".format(stage)), node_dict, edge_dict)
+    src_graph = GraphReaderBERT(os.path.join(args.data_dir, "{}_src_graph.bin".format(stage)), node_dict, edge_dict)
     src_text = TextReader(os.path.join(args.data_dir, "{}_src_text.txt".format(stage)), text_dict)
     tgt_graph = GraphReader(os.path.join(args.data_dir, "{}_tgt_graph.bin".format(stage)), node_dict, edge_dict)
     data = GraphTransReader(src_graph, src_text, tgt_graph,
@@ -103,7 +104,8 @@ def main():
                 sum(p.numel() for p in model.parameters() if p.requires_grad)))
     if cuda:
         model.cuda()
-    opt = get_std_opt(args, model)
+    # opt = get_std_opt(args, model)
+    opt = torch.optim.Adam(model.parameters(), lr=3e-5)
     print(model)
 
     # best_val = 9e+99
@@ -120,12 +122,13 @@ def main():
         # best_val = 0.
         start_epoch = saved["epoch"]
 
+    total_steps = 0
     for epoch in range(start_epoch, args.epochs):
         model.train()
         epoch_loss, epoch_steps = 0., 0
         epoch_st = time.time()
 
-        for train_it in train_iters:
+        for train_it in tqdm(list(train_iters)):
             if cuda:
                 samples = move_to_cuda(train_it)
             else:
@@ -135,11 +138,12 @@ def main():
             epoch_loss += loss.item()
             loss.backward()
             if (batch_step + 1) % args.accumulation_steps == 0:             # Wait for several backward steps
-                opt.clip_grad_norm(args.clip_norm)
+                # opt.clip_grad_norm(args.clip_norm)
                 opt.step()
                 opt.zero_grad()
+                total_steps += 1
 
-                total_steps = opt.get_step()
+                # total_steps = opt.get_step()
 
                 # evaluate the model on dev set
                 if total_steps % args.eval_step == 0:
@@ -158,8 +162,8 @@ def main():
 
         save_model(args, model, opt, epoch+1, best_val, "last")
         epoch_time = (time.time() - epoch_st) / 60
-        train_info = "[Train {:02}/{:02}]: total_loss={:.4f} avg_loss={:.4f} total_steps={:05} elapse={:.4f} mins best_val={:.4f} lr={:.4f}"
-        print(train_info.format(epoch+1, args.epochs, epoch_loss, epoch_loss/epoch_steps, total_steps, epoch_time, best_val, opt.rate()))
+        train_info = "[Train {:02}/{:02}]: total_loss={:.4f} avg_loss={:.4f} total_steps={:05} elapse={:.4f} mins best_val={:.4f}"
+        print(train_info.format(epoch+1, args.epochs, epoch_loss, epoch_loss/epoch_steps, total_steps, epoch_time, best_val))
 
 
 if __name__ == "__main__":

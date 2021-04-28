@@ -22,23 +22,23 @@ def get_parser(stage="train"):
     # encoder
     parser.add_argument("--modification", default="late", choices=['early', 'late'])
     parser.add_argument("--encoder-attention-heads", default=4, type=int)
-    parser.add_argument("--encoder-embed-dim", default=256, type=int)
+    parser.add_argument("--encoder-embed-dim", default=768, type=int)
     parser.add_argument("--encoder-ffn-embed-dim", default=512, type=int)
     parser.add_argument("--encoder-layers", default=3, type=int)
     parser.add_argument("--dropout", default=0.1, type=float)
     # decoder
-    parser.add_argument("--node-embed-size", default=256, type=int)
-    parser.add_argument("--node-hidden-size", default=256, type=int)
+    parser.add_argument("--node-embed-size", default=768, type=int)
+    parser.add_argument("--node-hidden-size", default=768, type=int)
     parser.add_argument("--dec-layers", default=1, type=int)
-    parser.add_argument("--edge-embed-size", default=256, type=int)
-    parser.add_argument("--edge-hidden-size", default=256, type=int)
+    parser.add_argument("--edge-embed-size", default=768, type=int)
+    parser.add_argument("--edge-hidden-size", default=768, type=int)
 
     # training
     if stage == "train":
         parser.add_argument("--epochs", default=20, type=int)
         parser.add_argument("--batch-size", default=64, type=int)
         parser.add_argument("--eval-step", default=5000, type=int)
-        parser.add_argument("--lr", default=1e-2, type=float)
+        parser.add_argument("--lr", default=3e-5, type=float)
         parser.add_argument("--warmup", default=4000, type=int)
         parser.add_argument("--clip-norm", default=25.0, type=float)
         parser.add_argument("--accumulation-steps", default=9, type=int)
@@ -105,11 +105,11 @@ class NoamOpt():
         return self._step
         
 
-def get_std_opt(args, model):
-    """Build a optimizer"""
-    return NoamOpt(args.encoder_embed_dim, 2, args.warmup,
-                   torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98), eps=1e-9),
-                   model.parameters())
+# def get_std_opt(args, model):
+#     """Build a optimizer"""
+#     return NoamOpt(args.encoder_embed_dim, 2, args.warmup,
+#                    torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.98), eps=1e-9),
+#                    model.parameters())
 
 
 def save_model(args, model, optimizer, cur_epoch, best_val, type="last"):
@@ -119,7 +119,6 @@ def save_model(args, model, optimizer, cur_epoch, best_val, type="last"):
     path = os.path.join(args.ckpt_dir, "{}_model".format(type))
 
     saved = {'epoch': cur_epoch, 'model': model.state_dict(), 'best_val': best_val}
-    saved.update(optimizer.get_opt())
 
     torch.save(saved, path)
 

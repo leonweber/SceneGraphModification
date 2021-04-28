@@ -5,6 +5,7 @@
 #Filename : models.py
 
 from __future__ import print_function
+from collections import defaultdict
 
 import copy
 import math
@@ -14,6 +15,7 @@ from functools import reduce
 import torch
 from torch import nn
 from torch.nn import functional as F
+from transformers import AutoModel
 
 
 def sequence_mask(lengths, max_len=None):
@@ -26,6 +28,39 @@ def sequence_mask(lengths, max_len=None):
             .type_as(lengths)
             .repeat(batch_size, 1)
             .lt(lengths.unsqueeze(1)))
+
+def get_full_attention_mask(input_ids):
+    return input_ids != 0
+
+    
+def get_attention_mask(adj_masks, node_pos, input_ids, text_len):
+    bsz, seq_len = input_ids.shape
+    attention_mask = torch.zeros(bsz, seq_len, seq_len).to(adj_masks)
+    attention_mask[:, :text_len, :] = True # text may attend to everything
+    attention_mask[:, :, :text_len] = True # everything may attend to text
+    attention_mask[:, torch.arange(seq_len), torch.arange(seq_len)] = True # everything may attend to itself
+
+    pad_idcs = torch.where(input_ids == 0)
+    for idx_b, idx_pad in zip(*pad_idcs): # nothing may attend to or from pad
+        attention_mask[idx_b, idx_pad, :] = False
+        attention_mask[idx_b, :, idx_pad] = False
+
+    for idx_b, idx_u, idx_v in zip(*torch.where(adj_masks)):
+        node_pos_b = node_pos[idx_b]
+        if idx_u >= len(node_pos_b) or idx_v >= len(node_pos_b):
+            continue
+
+        start_u, end_u = node_pos_b[idx_u]
+        start_v, end_v = node_pos_b[idx_v]
+        
+        start_u += text_len
+        end_u += text_len
+        start_v += text_len
+        end_v += text_len
+        attention_mask[idx_b, start_u:end_u, start_v:end_v] = True
+    
+    return attention_mask
+
 
 
 def clones(module, N):
@@ -56,17 +91,11 @@ class GraphTrans(nn.Module):
         self.edge_dict = edge_dict
         self.text_dict = text_dict
 
-        c = copy.deepcopy
-        attn = MultiHeadedAttention(args.encoder_attention_heads, args.encoder_embed_dim)
-        ff = PositionwiseFeedForward(args.encoder_embed_dim, args.encoder_ffn_embed_dim, args.dropout)
-        # graph encoder
+        # encoder
+        self.bert = AutoModel.from_pretrained("bert-base-uncased")
         self.node_embeds = Embeddings(self.args.encoder_embed_dim, len(node_dict))
         self.edge_embeds = self.node_embeds
 
-        # text encoder
-        self.text_embeds = self.node_embeds
-        self.position = PositionalEncoding(args.encoder_embed_dim, args.dropout)
-        self.enc = Encoder(EncoderLayer(args.encoder_embed_dim, c(attn), c(ff), args.dropout), args.encoder_layers)
         # graph decoder
         self.graph_dec = Decoder(args, node_dict, edge_dict, self.node_embeds)
 
@@ -109,53 +138,41 @@ class GraphTrans(nn.Module):
         src_text: modification queries: {x: [bsz, query_size]}
         """
         # graph embed
-        node_embed = self.node_embeds(src_graph["nodes"])
         edge_embed = self.edge_embeds(src_graph["edges"])
         edge_masks = (src_graph["edges"] != self.edge_dict.pad()) * (src_graph["edges"] != self.edge_dict.index("<blank>"))
-        edge_masks = edge_masks.to(edge_embed)
 
         adj_masks = edge_masks.clone()
         diag = torch.arange(adj_masks.size(-1))
         adj_masks[:, diag, diag] = 1
 
         edge_embed *= edge_masks.unsqueeze(-1)
-        graph_embed = node_embed + edge_embed.sum(dim=2)
-        src_node_masks = src_graph["nodes"] != self.node_dict.pad()
+        # graph_embed = node_embed + edge_embed.sum(dim=2)
+        # src_node_masks = src_graph["nodes"] != self.node_dict.pad()
 
         # text embed
-        text_embed = self.position(self.text_embeds(src_text["x"]))
-        src_text_mask = src_text["x"] != self.text_dict.pad()
+        # text_embed = self.position(self.text_embeds(src_text["x"]))
+        # src_text_mask = src_text["x"] != self.text_dict.pad()
 
-        # late fusion or naive concatenation
-        if self.args.modification == "late":
-            graph_repr = self.enc(graph_embed, adj_masks)
+        text_and_graph_encodings = {}
+        text_len = None
+        for k, v_text in src_text.items():
+            v_graph = src_graph["node_encodings"][k]
+            v = torch.cat([v_text, v_graph], dim=1)
+            text_len = v_text.size(1)
+            text_and_graph_encodings[k] = v
 
-            text_repr = self.enc(text_embed, src_text_mask.float().unsqueeze(-2))
+        text_and_graph_encodings["token_type_ids"][:, text_len:] = 1
+        # text_and_graph_encodings["attention_mask"] = get_attention_mask(adj_masks=adj_masks, node_pos=src_graph["node_pos"],
+        #                                                                 input_ids=text_and_graph_encodings["input_ids"],
+        #                                                                 text_len=text_len)
+        text_and_graph_encodings["attention_mask"] = get_full_attention_mask(text_and_graph_encodings["input_ids"])
+        enc_repr = self.bert(input_ids=text_and_graph_encodings["input_ids"],
+            attention_mask=text_and_graph_encodings["attention_mask"],
+            token_type_ids=text_and_graph_encodings["token_type_ids"]
+        )
+        mem_masks = text_and_graph_encodings["input_ids"] != 0
 
-            src_mems = torch.cat([graph_repr, text_repr], dim=1)
-            src_masks = torch.cat([src_node_masks, src_text_mask], dim=1)
-
-            enc_info = {"mem": src_mems, "mem_masks": src_masks}
-
-        # early fusion or cross attention
-        else:
-            enc_inputs = torch.cat([graph_embed, text_embed], dim=1)
-
-            bsz, text_len, _ = text_embed.size()
-            graph_size = graph_embed.size(1)
-
-            # masks of self attention from queries to graphs
-            text2graph_masks = src_node_masks.unsqueeze(1).expand(bsz, text_len, graph_size)
-            # masks of self attention from queries and graphs to queries
-            all2text_masks = src_text_mask.unsqueeze(1).expand(bsz, text_len+graph_size, text_len)
-            # masks of self attention from grahs to graphs, from queries to graphs, and from queries and graphs to queries
-            enc_masks = torch.cat([torch.cat([adj_masks.to(text2graph_masks.dtype), text2graph_masks], dim=1), all2text_masks], dim=-1)
-
-            enc_repr = self.enc(enc_inputs, enc_masks.float())
-
-            mem_masks = torch.cat([src_node_masks, src_text_mask], dim=1)
-
-            enc_info = {"mem": enc_repr, "mem_masks": mem_masks}
+        enc_info = {"mem": enc_repr["last_hidden_state"], "mem_masks": mem_masks}
 
         return enc_info
 
@@ -363,7 +380,7 @@ class Attention(nn.Module):
             else:
                 mask = mem_masks
             mask = mask.unsqueeze(1)  # Make it broadcastable.
-            align.masked_fill_(1 - mask, -float('inf'))
+            align.masked_fill_(~mask, -float('inf'))
 
         align_vectors = F.softmax(align, -1)
 
@@ -432,7 +449,7 @@ class Decoder(nn.Module):
         if self.node_input_proj:
             nodes_embeds = self.node_input_proj(nodes_embeds)
 
-        padded_nodes_embeds = nn.utils.rnn.pack_padded_sequence(nodes_embeds, nodes_len, batch_first=True)
+        padded_nodes_embeds = nn.utils.rnn.pack_padded_sequence(nodes_embeds, nodes_len.cpu(), batch_first=True)
         rnn_packed_outputs, h = self.node_RNN(padded_nodes_embeds, init_hiddens)
 
         rnn_outputs = nn.utils.rnn.pad_packed_sequence(rnn_packed_outputs, batch_first=True)[0]

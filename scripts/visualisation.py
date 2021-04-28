@@ -27,10 +27,10 @@ def main(args):
     items = load(args.src_graph)
     graph_src = []
     for i, item in enumerate(items):
-        nodes = []
+        nodes = [None] * len(item.nodes)
         edges = []
-        for n in item.nodes.data():
-            nodes.append(n[1]["feature"])
+        for n, data in item.nodes.data():
+            nodes[n] = data["feature"]
         for e in item.edges.data():
             edges.append((e[0], e[2]["feature"], e[1]))
         
@@ -39,11 +39,11 @@ def main(args):
     items = load(args.tgt_graph)
     graph_tgt = []
     for i, item in enumerate(items):
-        nodes = []
+        nodes = [None] * len(item.nodes)
         edges = []
         # if i > 4: break
-        for n in item.nodes.data():
-            nodes.append(n[1]["feature"])
+        for n, data in item.nodes.data():
+            nodes[n] = data["feature"]
         for e in item.edges.data():
             edges.append((e[0], e[2]["feature"], e[1]))
             # edges.append(e[2]["feature"])
@@ -92,6 +92,7 @@ def main(args):
 
         # output modification query
         print("id {}: {}".format(i, query))
+        # print(f"id {i}:", graph_src[i])
 
 
 if __name__ == "__main__":

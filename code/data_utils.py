@@ -10,12 +10,26 @@ import pickle
 
 import numpy as np
 import torch
+from torch.utils.data._utils.collate import default_collate
 
-from collections import Counter
+from collections import Counter, defaultdict
+from bisect import bisect_left, bisect_right
 
 from torch.utils.data import Dataset, Sampler, DataLoader
 from torch.nn import functional as F
+from transformers import AutoTokenizer
 
+def adapt_span(start, end, token_starts):
+    """
+    Adapt annotations to token spans
+    """
+    start = int(start)
+    end = int(end)
+
+    new_start = bisect_right(token_starts, start) - 1
+    new_end = bisect_left(token_starts, end)
+
+    return new_start, new_end
 
 def collate_tokens(values, pad_idx, shape):
     """Convert a list of nd tensors into a padded (n+1)d tensor."""
@@ -54,26 +68,38 @@ def shift_for_output(nodes, edges, eos_idx, pad_idx):
 def collate_fn(samples, pad_idx, eos_idx, train):
 
     def src_graph_batch(values):
-        nodes = [s[0] for s in values]
-        edges = [s[1] for s in values]
+        node_encodings = [s[0] for s in values]
+        node_pos = [s[1] for s in values]
+        edges = [s[2] for s in values]
 
-        bsz = len(nodes)
-        max_size = max([n.size(0) for n in nodes])
+        bsz = len(node_encodings)
 
-        nodes_t = collate_tokens(nodes, pad_idx, (bsz, max_size))
+        batch_node_encodings = defaultdict(list)
+        for node_encoding in node_encodings:
+            for k, v in node_encoding.items():
+                batch_node_encodings[k].append(torch.tensor(v))
+        
+        for k, v in batch_node_encodings.items():
+            max_size = max([len(i) for i in v])
+            batch_node_encodings[k] = collate_tokens(v, pad_idx=0, shape=(bsz, max_size))
+
         edges_t = collate_tokens(edges, pad_idx, (bsz, max_size, max_size))
 
-        return nodes_t, edges_t
+        return batch_node_encodings, node_pos, edges_t
 
     def text_batch(values):
-        tensors = [s for s in values]
+        batch_encodings = defaultdict(list)
+        bsz = len(values)
+        for batch_encoding in values:
+            for k, v in batch_encoding.items():
+                batch_encodings[k].append(torch.tensor(v))
 
-        bsz = len(tensors)
-        max_size = max([t.size(0) for t in tensors])
+        for k, v in batch_encodings.items():
+            max_size = max([len(i) for i in v])
+            batch_encodings[k] = collate_tokens(v, pad_idx=0, shape=(bsz, max_size))
 
-        tensor = collate_tokens(tensors, pad_idx, (bsz, max_size))
 
-        return tensor
+        return batch_encodings
 
     def tgt_graph_batch(values):
 
@@ -96,17 +122,18 @@ def collate_fn(samples, pad_idx, eos_idx, train):
         return nodes_x_t, nodes_y_t, edges_x_t, edges_y_t
 
     ids = torch.LongTensor([s[0] for s in samples])
-    src_nodes, src_edges = src_graph_batch([s[1] for s in samples])
+    src_node_encodings, src_node_pos, src_edges = src_graph_batch([s[1] for s in samples])
     queries = text_batch([s[2] for s in samples])
     tgt_nodes_x, tgt_nodes_y, tgt_edges_x, tgt_edges_y = tgt_graph_batch([s[3] for s in samples])
 
     return {
             "ids": ids,
             "src_graph": {
-                            "nodes": src_nodes,
+                            "node_encodings": src_node_encodings,
+                            "node_pos": src_node_pos,
                             "edges": src_edges
                          },
-            "src_text": {"x": queries},
+            "src_text": queries,
             "tgt_graph": {
                             "nodes": {
                                         "x": tgt_nodes_x,
@@ -270,7 +297,6 @@ class BatchSampler(Sampler):
     def __len__(self):
         return len(self.indices)
 
-
 class GraphReader(Dataset):
     """
     Graph dataset
@@ -333,6 +359,84 @@ class GraphReader(Dataset):
         return self.sizes[index]
 
 
+
+class GraphReaderBERT(Dataset):
+    """
+    Graph dataset
+    """
+    def __init__(self, path, node_dictionary, edge_dictionary):
+        self.node_encodings_list = []
+        self.node_pos_list = []
+        self.edges_list = []
+        self.graphs = []
+        self.sizes = []
+        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=True)
+        self.read_data(path, node_dictionary, edge_dictionary)
+        self.size = len(self.node_encodings_list)
+
+    def read_data(self, path, node_dict, edge_dict):
+        tokenizer = self.tokenizer
+        def parse_graph(g, node_dict, edge_dict):
+            """
+            convert graph stored in networkx into nodes and edges
+            """
+            num_nodes = g.number_of_nodes()
+            nodes = [node[-1]["feature"] for node in g.nodes.data()]
+            edges = [["<blank>" for _ in range(num_nodes)] for _ in range(num_nodes)]
+            for edge in g.edges.data():
+                edges[edge[0]][edge[1]] = edge[2]["feature"]
+                edges[edge[1]][edge[0]] = edge[2]["feature"]
+
+            node_encoding = tokenizer.encode_plus(" ".join(nodes) + " [SEP]", return_offsets_mapping=True, add_special_tokens=False)
+            token_starts = [i[0] for i in node_encoding["offset_mapping"][1:-1]]
+            node_char_pos = []
+            current_pos = 0
+            for node in nodes:
+                node_char_pos.append([current_pos, current_pos + len(node) + 1])
+                current_pos = node_char_pos[-1][1]
+            node_char_pos[-1][1] -= 1 # account for missing whitespace after last node
+            node_pos = [adapt_span(s, e, token_starts) for s, e in node_char_pos]
+            node_pos = [(s, e) for s, e in node_pos] 
+            nodes = node_dict.encode_line(nodes, False).long()
+            edges = torch.stack([edge_dict.encode_line(e, False) for e in edges], dim=0).to(nodes.dtype)
+            del node_encoding["offset_mapping"]
+            return node_encoding, node_pos, edges
+
+        def load_data(output_file):
+            with open(output_file, "rb") as fr:
+                while True:
+                    try:
+                        yield pickle.load(fr)
+                    except EOFError:
+                        break
+
+        graphs = load_data(path)
+        for i, graph in enumerate(graphs):
+            # if i > 1000: break
+            self.graphs.append(graph)
+            node_encoding, node_pos, edges = parse_graph(graph, node_dict, edge_dict)
+            self.node_encodings_list.append(node_encoding)
+            self.node_pos_list.append(node_pos)
+            self.edges_list.append(edges)
+            self.sizes.append(len(node_encoding["input_ids"]))
+
+        self.sizes = np.array(self.sizes)
+
+    def check_index(self, i):
+        if i < 0 or i >= self.size:
+            raise IndexError('index out of range')
+
+    def __getitem__(self, i):
+        self.check_index(i)
+        return self.node_encodings_list[i], self.node_pos_list[i], self.edges_list[i]
+
+    def __len__(self):
+        return self.size
+
+    def item_size(self, index):
+        return self.sizes[index]
+
+
 class TextReader(Dataset):
     """
     Query dataset
@@ -341,6 +445,7 @@ class TextReader(Dataset):
         self.tokens_list = []
         self.lines = []
         self.sizes = []
+        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=True)
         self.read_data(path, dictionary)
         self.size = len(self.tokens_list)
 
@@ -349,9 +454,9 @@ class TextReader(Dataset):
             for i, line in enumerate(f):
                 # if i > 1000: break
                 self.lines.append(line.strip())
-                tokens = dictionary.encode_line(line).long()
-                self.tokens_list.append(tokens)
-                self.sizes.append(tokens.size(0))
+                encoding = self.tokenizer.encode_plus("[CLS] " + line.strip() + "[SEP]", add_special_tokens=False)
+                self.tokens_list.append(encoding)
+                self.sizes.append(len(encoding["input_ids"]))
 
         self.sizes = np.array(self.sizes)
 
