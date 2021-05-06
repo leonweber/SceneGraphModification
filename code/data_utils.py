@@ -370,7 +370,7 @@ class GraphReaderBERT(Dataset):
         self.edges_list = []
         self.graphs = []
         self.sizes = []
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=True)
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext", use_fast=True)
         self.read_data(path, node_dictionary, edge_dictionary)
         self.size = len(self.node_encodings_list)
 
@@ -445,7 +445,7 @@ class TextReader(Dataset):
         self.tokens_list = []
         self.lines = []
         self.sizes = []
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", use_fast=True)
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext", use_fast=True)
         self.read_data(path, dictionary)
         self.size = len(self.tokens_list)
 

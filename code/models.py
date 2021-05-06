@@ -92,7 +92,7 @@ class GraphTrans(nn.Module):
         self.text_dict = text_dict
 
         # encoder
-        self.bert = AutoModel.from_pretrained("bert-base-uncased")
+        self.bert = AutoModel.from_pretrained("microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext")
         self.node_embeds = Embeddings(self.args.encoder_embed_dim, len(node_dict))
         self.edge_embeds = self.node_embeds
 
@@ -162,10 +162,9 @@ class GraphTrans(nn.Module):
             text_and_graph_encodings[k] = v
 
         text_and_graph_encodings["token_type_ids"][:, text_len:] = 1
-        # text_and_graph_encodings["attention_mask"] = get_attention_mask(adj_masks=adj_masks, node_pos=src_graph["node_pos"],
-        #                                                                 input_ids=text_and_graph_encodings["input_ids"],
-        #                                                                 text_len=text_len)
-        text_and_graph_encodings["attention_mask"] = get_full_attention_mask(text_and_graph_encodings["input_ids"])
+        text_and_graph_encodings["attention_mask"] = get_attention_mask(adj_masks=adj_masks, node_pos=src_graph["node_pos"],
+                                                                        input_ids=text_and_graph_encodings["input_ids"],
+                                                                        text_len=text_len)
         enc_repr = self.bert(input_ids=text_and_graph_encodings["input_ids"],
             attention_mask=text_and_graph_encodings["attention_mask"],
             token_type_ids=text_and_graph_encodings["token_type_ids"]

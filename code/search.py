@@ -164,8 +164,13 @@ def greedy_search(model, src_graph, src_text, tgt_graph,
     edge_correct = edge_total_num - edge_incorrect
     graph_correct = 0
 
+    nodes_pred_names = [node_dict[i] for i in inputs]
+    nodes_true_names = [node_dict[i] for i in act_outputs]
+    print("pred: ", sorted(nodes_pred_names))
+    print("true: ", sorted(nodes_true_names))
     if sorted(inputs) == sorted(act_outputs) and sorted(pred_edges) == sorted(act_edges):
         graph_correct = 1
+
 
     return (node_correct, edge_correct), (node_total_num, edge_total_num), (len(inputs), len(pred_edges)), graph_correct
 
@@ -221,9 +226,12 @@ def main():
         graph_corrects += batch_graph_correct
         graphs += 1
 
-    print("Node: Recall: {:.2f}({}/{}), Precision: {:.2f}({}/{}) ".format(nodes_correct/nodes_num * 100, nodes_correct, nodes_num, nodes_correct/nodes_pred * 100, nodes_correct, nodes_pred))
-    print("Edge: Recall: {:.2f}({}/{}), Precision: {:.2f}({}/{}) ".format(edges_correct/edges_num * 100, edges_correct, edges_num, edges_correct/edges_pred * 100, edges_correct, edges_pred))
-    print("Accuracy: {:.2f}({}/{})".format(graph_corrects/graphs * 100, graph_corrects, graphs))
+        try:
+            print("Node: Recall: {:.2f}({}/{}), Precision: {:.2f}({}/{}) ".format(nodes_correct/nodes_num * 100, nodes_correct, nodes_num, nodes_correct/nodes_pred * 100, nodes_correct, nodes_pred))
+            print("Edge: Recall: {:.2f}({}/{}), Precision: {:.2f}({}/{}) ".format(edges_correct/edges_num * 100, edges_correct, edges_num, edges_correct/edges_pred * 100, edges_correct, edges_pred))
+            print("Accuracy: {:.2f}({}/{})".format(graph_corrects/graphs * 100, graph_corrects, graphs))
+        except ZeroDivisionError:
+            pass
 
 
 if __name__ == "__main__":

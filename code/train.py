@@ -105,7 +105,7 @@ def main():
     if cuda:
         model.cuda()
     # opt = get_std_opt(args, model)
-    opt = torch.optim.Adam(model.parameters(), lr=3e-5)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-5)
     print(model)
 
     # best_val = 9e+99
